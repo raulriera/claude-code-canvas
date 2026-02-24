@@ -60,85 +60,72 @@ function findSessionFile(sessionId, projectPath) {
   return null;
 }
 
-function lastAssistantText(sessionId, projectPath) {
+function parseSessionFile(sessionId, projectPath) {
+  const result = { summary: '', branch: null, cwd: null };
   const sessionFile = findSessionFile(sessionId, projectPath);
-  if (!sessionFile) return '';
+  if (!sessionFile) return result;
 
   try {
     const stat = fs.statSync(sessionFile);
-    if (stat.size > MAX_FILE_SIZE) return '';
+    if (stat.size > MAX_FILE_SIZE) return result;
 
     let content;
     if (stat.size > TAIL_THRESHOLD) {
-      // Tail-read: last 256KB
+      // For large files: read head (for branch/cwd) + tail (for summary)
       const fd = fs.openSync(sessionFile, 'r');
-      const buf = Buffer.alloc(TAIL_THRESHOLD);
-      const bytesRead = fs.readSync(fd, buf, 0, TAIL_THRESHOLD, stat.size - TAIL_THRESHOLD);
-      fs.closeSync(fd);
-      content = buf.slice(0, bytesRead).toString('utf-8');
-      // Discard partial first line
-      const firstNewline = content.indexOf('\n');
-      if (firstNewline !== -1) {
-        content = content.slice(firstNewline + 1);
+
+      // Head read for branch/cwd
+      const headBuf = Buffer.alloc(Math.min(8192, stat.size));
+      fs.readSync(fd, headBuf, 0, headBuf.length, 0);
+      for (const line of headBuf.toString('utf-8').split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (!result.branch && obj.gitBranch) result.branch = obj.gitBranch;
+          if (!result.cwd && obj.cwd) result.cwd = obj.cwd;
+          if (result.branch && result.cwd) break;
+        } catch {}
       }
+
+      // Tail read for summary
+      const tailBuf = Buffer.alloc(TAIL_THRESHOLD);
+      const bytesRead = fs.readSync(fd, tailBuf, 0, TAIL_THRESHOLD, stat.size - TAIL_THRESHOLD);
+      fs.closeSync(fd);
+      content = tailBuf.slice(0, bytesRead).toString('utf-8');
+      const firstNewline = content.indexOf('\n');
+      if (firstNewline !== -1) content = content.slice(firstNewline + 1);
     } else {
       content = fs.readFileSync(sessionFile, 'utf-8');
     }
 
-    const lines = content.split('\n');
-    let lastText = '';
-
-    for (const line of lines) {
+    for (const line of content.split('\n')) {
       if (!line.trim() || line.length > MAX_LINE_LENGTH) continue;
       try {
         const obj = JSON.parse(line);
-        if (obj.type !== 'assistant') continue;
+        if (!result.branch && obj.gitBranch) result.branch = obj.gitBranch;
+        if (!result.cwd && obj.cwd) result.cwd = obj.cwd;
 
-        let text = '';
-        const msgContent = obj.message?.content;
-        if (typeof msgContent === 'string') {
-          text = msgContent;
-        } else if (Array.isArray(msgContent)) {
-          text = msgContent
-            .filter(b => b.type === 'text' && b.text)
-            .map(b => b.text)
-            .join(' ');
+        if (obj.type === 'assistant') {
+          let text = '';
+          const msgContent = obj.message?.content;
+          if (typeof msgContent === 'string') {
+            text = msgContent;
+          } else if (Array.isArray(msgContent)) {
+            text = msgContent
+              .filter(b => b.type === 'text' && b.text)
+              .map(b => b.text)
+              .join(' ');
+          }
+          if (text) result.summary = text;
         }
-        if (text) lastText = text;
-      } catch { /* skip */ }
-    }
-
-    // Truncate summary to reasonable length (enough for 5 lines)
-    if (lastText.length > 500) lastText = lastText.slice(0, 500);
-    return lastText;
-  } catch {
-    return '';
-  }
-}
-
-function detectSessionCwd(sessionId, projectPath) {
-  const sessionFile = findSessionFile(sessionId, projectPath);
-  if (!sessionFile) return null;
-
-  try {
-    const stat = fs.statSync(sessionFile);
-    if (stat.size > MAX_FILE_SIZE) return null;
-
-    // Read just the first few KB to find a cwd
-    const fd = fs.openSync(sessionFile, 'r');
-    const buf = Buffer.alloc(Math.min(8192, stat.size));
-    fs.readSync(fd, buf, 0, buf.length, 0);
-    fs.closeSync(fd);
-
-    for (const line of buf.toString('utf-8').split('\n')) {
-      if (!line.trim()) continue;
-      try {
-        const obj = JSON.parse(line);
-        if (obj.cwd) return obj.cwd;
       } catch {}
     }
-  } catch {}
-  return null;
+
+    if (result.summary.length > 500) result.summary = result.summary.slice(0, 500);
+    return result;
+  } catch {
+    return result;
+  }
 }
 
 function detectBranch(projectPath) {
@@ -206,14 +193,13 @@ function loadSessions() {
     else if (age < 600) status = 'needsInput';
     else status = 'archived';
 
-    const summary = lastAssistantText(sid, projectPath);
-    const sessionCwd = detectSessionCwd(sid, projectPath);
-    const branch = detectBranch(sessionCwd || projectPath);
+    const parsed = parseSessionFile(sid, projectPath);
+    const branch = parsed.branch || detectBranch(parsed.cwd || projectPath);
 
     sessions.push({
       id: sid,
       prompt,
-      summary,
+      summary: parsed.summary,
       status,
       timestamp: last.timestamp || 0,
       projectPath,
