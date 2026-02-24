@@ -309,7 +309,7 @@ app.post('/api/open-session', (req, res) => {
   const safeId = sessionId.replace(/'/g, "'\\''");
 
   const cdCmd = safePath ? `cd '${safePath}' && ` : '';
-  const cmd = `osascript -e 'tell application "Terminal" to do script "${cdCmd}claude --resume ${safeId}"'`;
+  const cmd = `osascript -e 'tell application "Terminal" to activate' -e 'tell application "Terminal" to do script "${cdCmd}claude --resume ${safeId}"'`;
 
   exec(cmd, (err) => {
     if (err) {
