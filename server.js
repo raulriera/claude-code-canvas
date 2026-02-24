@@ -16,7 +16,6 @@ const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 
-const MAX_FILE_SIZE = 2 * 1024 * 1024;        // 2 MB skip threshold
 const TAIL_THRESHOLD = 256 * 1024;             // 256 KB tail-read threshold
 const MAX_LINE_LENGTH = 50000;                 // Skip lines over 50 KB
 const MAX_SESSIONS_PER_BRANCH = 6;
@@ -67,7 +66,6 @@ function parseSessionFile(sessionId, projectPath) {
 
   try {
     const stat = fs.statSync(sessionFile);
-    if (stat.size > MAX_FILE_SIZE) return result;
 
     let content;
     if (stat.size > TAIL_THRESHOLD) {
