@@ -41,15 +41,27 @@ export class CanvasRenderer {
   }
 
   setData(nodes, connections) {
+    const oldNodeMap = this.nodeMap;
+
     this.nodes = nodes;
     this.connections = connections;
 
     this.nodeMap = {};
     this.childrenMap = {};
     for (const n of nodes) {
-      if (this.positionOffsets[n.id]) {
-        n.x += this.positionOffsets[n.id].dx;
-        n.y += this.positionOffsets[n.id].dy;
+      const existing = oldNodeMap[n.id];
+      if (existing) {
+        // Existing node: keep its current position (preserves drag offsets
+        // and prevents layout recalculations from shifting anything)
+        n.x = existing.x;
+        n.y = existing.y;
+      } else {
+        // New node: use the layout-computed position, adjusted by
+        // parent's drag offset so it appears near the dragged parent
+        if (n.parentID && this.positionOffsets[n.parentID]) {
+          n.x += this.positionOffsets[n.parentID].dx;
+          n.y += this.positionOffsets[n.parentID].dy;
+        }
       }
       this.nodeMap[n.id] = n;
       if (!this.childrenMap[n.id]) this.childrenMap[n.id] = [];

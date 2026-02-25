@@ -231,40 +231,39 @@ function groupSessions(sessions) {
 
     const branches = [];
     for (const [branchName, branchSessions] of Object.entries(branchMap)) {
-      // Sort by timestamp descending, cap at 6
+      // Compute creation time from ALL sessions before capping
+      const createdAt = Math.min(...branchSessions.map(s => s.timestamp));
+
+      // Cap at most recent 6, then sort ascending for stable layout ordering
       branchSessions.sort((a, b) => b.timestamp - a.timestamp);
       const capped = branchSessions.slice(0, MAX_SESSIONS_PER_BRANCH);
+      capped.sort((a, b) => a.timestamp - b.timestamp);
 
       branches.push({
         name: branchName,
         sessions: capped,
+        createdAt,
       });
     }
 
-    // Sort branches: active first, then alphabetical
-    branches.sort((a, b) => {
-      const aActive = a.sessions.some(s => s.status === 'running' || s.status === 'needsInput');
-      const bActive = b.sessions.some(s => s.status === 'running' || s.status === 'needsInput');
-      if (aActive && !bActive) return -1;
-      if (!aActive && bActive) return 1;
-      return a.name.localeCompare(b.name);
-    });
+    // Sort branches by creation time (oldest first) for stable ordering
+    branches.sort((a, b) => a.createdAt - b.createdAt);
 
     const activeCount = projSessions.filter(s => s.status === 'running' || s.status === 'needsInput').length;
+    // Creation time from ALL sessions (before capping)
+    const createdAt = Math.min(...projSessions.map(s => s.timestamp));
 
     projects.push({
       name,
       path: projPath,
       activeCount,
       branches,
+      createdAt,
     });
   }
 
-  // Sort projects: more active first, then alphabetical
-  projects.sort((a, b) => {
-    if (b.activeCount !== a.activeCount) return b.activeCount - a.activeCount;
-    return a.name.localeCompare(b.name);
-  });
+  // Sort projects by creation time (oldest first) for stable ordering
+  projects.sort((a, b) => a.createdAt - b.createdAt);
 
   return projects;
 }

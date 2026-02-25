@@ -5,6 +5,30 @@ const BRANCH_RADIUS = 260;
 const SESSION_RADIUS = 200;
 const START_ANGLE = -Math.PI / 2;
 
+// Golden angle: distributes items around a circle so that adding item N+1
+// never changes the position of items 0..N.
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const BRANCH_STEP = 0.35;  // radians between branches
+const SESSION_STEP = 0.25; // radians between sessions
+
+// Alternating offsets: 0, +s, -s, +2s, -2s, ...
+// Each index always maps to the same offset regardless of total count.
+function alternatingOffset(index, step) {
+  if (index === 0) return 0;
+  const side = index % 2 === 1 ? 1 : -1;
+  const tier = Math.ceil(index / 2);
+  return side * tier * step;
+}
+
+// Stable hash for assigning colors by project path
+function stableHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
 export function computeLayout(projects) {
   const nodes = [];
   const connections = [];
@@ -23,11 +47,13 @@ export function computeLayout(projects) {
   const projCount = projects.length;
 
   projects.forEach((project, i) => {
+    // Golden angle: each project keeps its angle when new projects are added
     const projAngle = projCount === 1
       ? START_ANGLE
-      : START_ANGLE + (i / projCount) * 2 * Math.PI;
-    const projColor = Palette.projectColors[i % Palette.projectColors.length];
-    const projID = `proj-${i}`;
+      : START_ANGLE + i * GOLDEN_ANGLE;
+    // Color based on project path hash so it's stable across reorders
+    const projColor = Palette.projectColors[stableHash(project.path) % Palette.projectColors.length];
+    const projID = `proj-${project.path}`;
 
     const projX = Math.cos(projAngle) * PROJECT_RADIUS;
     const projY = Math.sin(projAngle) * PROJECT_RADIUS;
@@ -52,15 +78,11 @@ export function computeLayout(projects) {
     });
 
     const branches = project.branches || [];
-    const branchCount = branches.length;
 
     branches.forEach((branch, j) => {
-      const fanSpread = Math.min(branchCount * 0.35, 1.2);
-      const branchOffset = branchCount === 1
-        ? 0
-        : (j / (branchCount - 1) - 0.5) * fanSpread;
-      const branchAngle = projAngle + branchOffset;
-      const branchID = `branch-${i}-${j}`;
+      // Fixed alternating offset: existing branches stay put when new ones appear
+      const branchAngle = projAngle + alternatingOffset(j, BRANCH_STEP);
+      const branchID = `branch-${project.path}:${branch.name}`;
 
       const branchX = projX + Math.cos(branchAngle) * BRANCH_RADIUS;
       const branchY = projY + Math.sin(branchAngle) * BRANCH_RADIUS;
@@ -85,14 +107,10 @@ export function computeLayout(projects) {
       });
 
       const sessions = branch.sessions || [];
-      const sessCount = sessions.length;
 
       sessions.forEach((session, k) => {
-        const sessFan = Math.min(sessCount * 0.28, 1.0);
-        const sessOffset = sessCount === 1
-          ? 0
-          : (k / (sessCount - 1) - 0.5) * sessFan;
-        const sessAngle = branchAngle + sessOffset;
+        // Fixed alternating offset: existing sessions stay put when new ones appear
+        const sessAngle = branchAngle + alternatingOffset(k, SESSION_STEP);
         const sessID = `sess-${session.id}`;
 
         const sessX = branchX + Math.cos(sessAngle) * SESSION_RADIUS;
