@@ -51,8 +51,8 @@ export function computeLayout(projects) {
     const projAngle = projCount === 1
       ? START_ANGLE
       : START_ANGLE + i * GOLDEN_ANGLE;
-    // Color based on project path hash so it's stable across reorders
-    const projColor = Palette.projectColors[stableHash(project.path) % Palette.projectColors.length];
+    // Assign colors by index so every project gets a distinct color
+    const projColor = Palette.projectColors[i % Palette.projectColors.length];
     const projID = `proj-${project.path}`;
 
     const projX = Math.cos(projAngle) * PROJECT_RADIUS;

@@ -19,7 +19,20 @@ export const Palette = {
   red: '#EF4444',
   teal: '#0FD1B8',
 
-  projectColors: ['#22C55E', '#3B82F6', '#F59E0B', '#A855F7', '#EF4444', '#0FD1B8'],
+  projectColors: [
+    '#22C55E', // green
+    '#3B82F6', // blue
+    '#F59E0B', // amber
+    '#A855F7', // purple
+    '#EF4444', // red
+    '#0FD1B8', // teal
+    '#EC4899', // pink
+    '#F97316', // orange
+    '#06B6D4', // cyan
+    '#84CC16', // lime
+    '#8B5CF6', // violet
+    '#14B8A6', // emerald
+  ],
 };
 
 export function statusColor(status) {
