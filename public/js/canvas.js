@@ -1,4 +1,5 @@
 import { Palette, statusColor, hexToRGBA } from './palette.js';
+import { PhysicsEngine } from './physics.js';
 
 const MIN_ZOOM = 0.08;
 const MAX_ZOOM = 4.0;
@@ -35,33 +36,29 @@ export class CanvasRenderer {
     this.isPanning = false;
     this.onSessionClick = null;
 
+    this.physics = new PhysicsEngine();
+    this._isInitialLoad = true;
+
     this._resize();
     this._bindEvents();
     this._loop();
   }
 
   setData(nodes, connections) {
-    const oldNodeMap = this.nodeMap;
-
     this.nodes = nodes;
     this.connections = connections;
 
     this.nodeMap = {};
     this.childrenMap = {};
     for (const n of nodes) {
-      const existing = oldNodeMap[n.id];
-      if (existing) {
-        // Existing node: keep its current position (preserves drag offsets
-        // and prevents layout recalculations from shifting anything)
-        n.x = existing.x;
-        n.y = existing.y;
-      } else {
-        // New node: use the layout-computed position, adjusted by
-        // parent's drag offset so it appears near the dragged parent
-        if (n.parentID && this.positionOffsets[n.parentID]) {
-          n.x += this.positionOffsets[n.parentID].dx;
-          n.y += this.positionOffsets[n.parentID].dy;
-        }
+      // Re-apply accumulated drag offsets so spring targets
+      // stay at the user's drop position across poll refreshes
+      if (this.positionOffsets[n.id]) {
+        n.x += this.positionOffsets[n.id].dx;
+        n.y += this.positionOffsets[n.id].dy;
+      } else if (n.parentID && this.positionOffsets[n.parentID]) {
+        n.x += this.positionOffsets[n.parentID].dx;
+        n.y += this.positionOffsets[n.parentID].dy;
       }
       this.nodeMap[n.id] = n;
       if (!this.childrenMap[n.id]) this.childrenMap[n.id] = [];
@@ -72,6 +69,14 @@ export class CanvasRenderer {
     }
 
     this.hiddenDirty = true;
+    this._recomputeHidden();
+
+    // Layout positions become spring targets; physics animates toward them
+    this.physics.setTargets(nodes, this.cachedHiddenIDs, this._isInitialLoad, this.nodeMap);
+    this._isInitialLoad = false;
+
+    // Sync initial physics positions to nodes so first draw is correct
+    this._syncFromPhysics();
     this.dirty = true;
   }
 
@@ -112,6 +117,7 @@ export class CanvasRenderer {
           startWorldX: worldPos.x,
           startWorldY: worldPos.y,
         };
+        this.physics.pinNode(hitNode.id);
       } else {
         this.isPanning = true;
         this.dragging = {
@@ -121,6 +127,7 @@ export class CanvasRenderer {
           startPanX: this.panOffset.x,
           startPanY: this.panOffset.y,
         };
+        this.physics.startPanTracking();
       }
     });
 
@@ -134,8 +141,17 @@ export class CanvasRenderer {
       }
 
       if (this.isPanning && this.dragging) {
-        this.panOffset.x = this.dragging.startPanX + (e.clientX - this.dragging.startScreenX);
-        this.panOffset.y = this.dragging.startPanY + (e.clientY - this.dragging.startScreenY);
+        const dx = e.clientX - this.dragging.startScreenX;
+        const dy = e.clientY - this.dragging.startScreenY;
+        this.panOffset.x = this.dragging.startPanX + dx;
+        this.panOffset.y = this.dragging.startPanY + dy;
+
+        const frameDx = e.clientX - (this._lastPanX || this.dragging.startScreenX);
+        const frameDy = e.clientY - (this._lastPanY || this.dragging.startScreenY);
+        this._lastPanX = e.clientX;
+        this._lastPanY = e.clientY;
+        this.physics.recordPanDelta(frameDx, frameDy);
+
         this.dirty = true;
       } else if (this.dragging && this.dragging.nodeId) {
         const worldPos = this._screenToWorld(e.clientX, e.clientY);
@@ -144,6 +160,7 @@ export class CanvasRenderer {
         this.dragging.startWorldX = worldPos.x;
         this.dragging.startWorldY = worldPos.y;
         this._moveNodeSubtree(this.dragging.nodeId, dx, dy);
+        this._syncToPhysics(this.dragging.nodeId);
         this.dirty = true;
       }
     });
@@ -155,8 +172,21 @@ export class CanvasRenderer {
           this.onSessionClick(node.data);
         }
       }
+
+      if (this.dragging && this.dragging.nodeId) {
+        this.physics.releaseNode(this.dragging.nodeId);
+        // Also release subtree targets to match drop positions
+        this._releaseSubtree(this.dragging.nodeId);
+      }
+
+      if (this.isPanning) {
+        this.physics.endPanTracking();
+      }
+
       this.dragging = null;
       this.isPanning = false;
+      this._lastPanX = null;
+      this._lastPanY = null;
       mouseDownPos = null;
     };
 
@@ -252,6 +282,8 @@ export class CanvasRenderer {
     if (this.collapsedIDs.has(nodeId)) this.collapsedIDs.delete(nodeId);
     else this.collapsedIDs.add(nodeId);
     this.hiddenDirty = true;
+    this._recomputeHidden();
+    this.physics.setTargets(this.nodes, this.cachedHiddenIDs, false, this.nodeMap);
     this.dirty = true;
   }
 
@@ -294,9 +326,67 @@ export class CanvasRenderer {
     }
   }
 
+  // ── Physics Sync ──
+
+  _syncFromPhysics() {
+    for (const node of this.nodes) {
+      const body = this.physics.getBody(node.id);
+      if (body) {
+        node.x = body.x;
+        node.y = body.y;
+      }
+    }
+  }
+
+  _syncToPhysics(nodeId) {
+    const node = this.nodeMap[nodeId];
+    if (!node) return;
+    this.physics.moveNode(nodeId, node.x, node.y, this._getSubtreeIDs(nodeId));
+  }
+
+  _releaseSubtree(nodeId) {
+    const subtreeIDs = this._getSubtreeIDs(nodeId);
+    for (const cid of subtreeIDs) {
+      const body = this.physics.getBody(cid);
+      if (body) {
+        body.pinned = false;
+        body.vx = 0;
+        body.vy = 0;
+        body.targetX = body.x;
+        body.targetY = body.y;
+      }
+    }
+  }
+
+  _getSubtreeIDs(nodeId) {
+    const ids = [];
+    const walk = (id) => {
+      for (const cid of (this.childrenMap[id] || [])) {
+        ids.push(cid);
+        walk(cid);
+      }
+    };
+    walk(nodeId);
+    return ids;
+  }
+
   // ── Render Loop ──
 
   _loop() {
+    if (this.physics.isActive()) {
+      this.physics.tick();
+      this._syncFromPhysics();
+
+      // Apply pan momentum
+      const pan = this.physics.getPanMomentum();
+      if (pan) {
+        this.panOffset.x += pan.dx;
+        this.panOffset.y += pan.dy;
+      }
+
+      this.dirty = true;
+    }
+
     if (this.dirty) {
       this._draw();
       this.dirty = false;
@@ -363,15 +453,18 @@ export class CanvasRenderer {
     const taper = TAPER[conn.thickness] || TAPER[1];
     const seed = this._hashStr(conn.from + ':' + conn.to);
 
-    // Quadratic bezier control point with organic wobble
+    // Quadratic bezier control point with per-connection curvature variation
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const midX = (from.x + to.x) / 2;
     const midY = (from.y + to.y) / 2;
-    const wobbleX = (this._noise(seed) - 0.5) * 25;
-    const wobbleY = (this._noise(seed + 3.7) - 0.5) * 25;
-    const cpX = midX - dy * 0.22 + wobbleX;
-    const cpY = midY + dx * 0.22 + wobbleY;
+    // Vary curvature direction and magnitude per connection
+    const curvature = 0.12 + this._noise(seed + 1.1) * 0.25;  // range [0.12, 0.37]
+    const sign = this._noise(seed + 5.3) > 0.5 ? 1 : -1;      // flip side randomly
+    const wobbleX = (this._noise(seed) - 0.5) * 60;
+    const wobbleY = (this._noise(seed + 3.7) - 0.5) * 60;
+    const cpX = midX - dy * curvature * sign + wobbleX;
+    const cpY = midY + dx * curvature * sign + wobbleY;
 
     // Sample points along the quadratic bezier
     const pts = [];
