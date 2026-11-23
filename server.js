@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 
 const app = express();
 const PORT = 3000;
@@ -285,6 +285,36 @@ app.post('/api/open-session', (req, res) => {
   const { sessionId, projectPath } = req.body;
   if (!sessionId) {
     return res.status(400).json({ error: 'sessionId required' });
+  }
+
+  if (process.platform === 'win32') {
+    // El ID de sesion llega del cliente y termina en un comando: solo UUID.
+    if (!/^[0-9a-f-]{36}$/i.test(sessionId)) {
+      return res.status(400).json({ error: 'invalid sessionId' });
+    }
+    // En PowerShell la comilla simple se escapa duplicandola.
+    const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
+    const script =
+      (projectPath ? `Set-Location -LiteralPath ${psQuote(projectPath)}; ` : '') +
+      `claude --resume ${psQuote(sessionId)}`;
+    // -EncodedCommand (UTF-16LE en Base64) evita que cmd.exe vea la ruta,
+    // asi espacios, puntos y acentos no rompen el quoting.
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+
+    const child = spawn(
+      'cmd.exe',
+      ['/c', 'start', '', 'powershell.exe', '-NoExit', '-EncodedCommand', encoded],
+      { detached: true, stdio: 'ignore' }
+    );
+    child.once('error', (err) => {
+      console.error('Failed to open session:', err);
+      if (!res.headersSent) res.status(500).json({ error: 'Failed to open terminal' });
+    });
+    child.once('spawn', () => {
+      child.unref();
+      res.json({ ok: true });
+    });
+    return;
   }
 
   // Escape single quotes for shell
